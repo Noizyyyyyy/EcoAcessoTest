@@ -1,18 +1,11 @@
-import { createClient } from '@supabase/supabase-js';
+import sql from './db.js'; // Importa a conexão PostgreSQL
 import bcrypt from 'bcryptjs';
 import { cpf } from 'node-cpf';
-
-// Variáveis de ambiente
-const supabaseUrl = process.env.SUPABASE_URL;
-const supabaseAnonKey = process.env.SUPABASE_ANON_KEY;
-
-// Inicializa o cliente Supabase
-const supabase = createClient(supabaseUrl, supabaseAnonKey);
 
 // Expressão Regular para validação básica de formato de e-mail
 const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
-
+// O Vercel reconhece ficheiros .js com 'export default' como Serverless Functions
 export default async (req, res) => {
     // 1. Apenas aceita requisições POST
     if (req.method !== 'POST') {
@@ -36,54 +29,43 @@ export default async (req, res) => {
         }
 
         // --- VALIDAÇÃO DE CPF (Estrutural) ---
-        const cpfLimpo = data.cpf.replace(/\D/g, ''); // Remove formatação (pontos/traços)
+        const cpfLimpo = data.cpf.replace(/\D/g, ''); 
         
         if (!cpf.validate(cpfLimpo)) {
             res.status(400).json({ error: 'O CPF fornecido é inválido. Verifique os números.' });
             return;
         }
         
-        // --- LÓGICA DE SEGURANÇA CRÍTICA: HASH DA SENHA ---
+        // --- CRIPTOGRAFIA DE SENHA ---
         const salt = await bcrypt.genSalt(10);
         const senhaHash = await bcrypt.hash(data.senha, salt);
 
         // 3. Mapeia os dados do formulário para o formato da tabela 'cadastro'
         const cadastroData = {
-            nome_completo: data.nome_completo || data.nome,
+            nome_completo: data.nome_completo || data.nome || null, 
             email: data.email,
-            telefone: data.telefone,
+            telefone: data.telefone || null,
             data_nascimento: data['data-nascimento'] || null, 
-            cpf: cpfLimpo, // Salva o CPF sem formatação
+            cpf: cpfLimpo,
             senha_hash: senhaHash, 
-            cep: data.cep,
-            logradouro: data.logradouro,
-            numero: data.numero,
-            complemento: data.complemento,
-            bairro: data.bairro,
-            cidade: data.cidade,
-            estado: data.estado,
+            cep: data.cep || null,
+            logradouro: data.logradouro || null,
+            numero: data.numero || null,
+            complemento: data.complemento || null,
+            bairro: data.bairro || null,
+            cidade: data.cidade || null,
+            estado: data.estado || null,
             termos_aceitos: data.termos_aceitos,
-            
-            // O e-mail é automaticamente considerado confirmado (true)
             email_confirmado: true, 
         };
 
-        // 4. Insere os dados no Supabase
-        const { error } = await supabase
-            .from('cadastro') 
-            .insert([cadastroData]);
+        // 4. INSERÇÃO NO BANCO DE DADOS (usando o cliente 'postgres')
+        // O comando 'sql` utiliza um array para fazer uma inserção segura (sem SQL Injection)
+        await sql`
+            INSERT INTO cadastro 
+                ${ sql(cadastroData) }
+        `;
 
-        if (error) {
-            console.error('Erro no Supabase:', error);
-            // Trata erros de E-mail/CPF duplicado (código 23505)
-            if (error.code === '23505') {
-                 res.status(409).json({ error: 'E-mail ou CPF já cadastrado.' });
-            } else {
-                 res.status(500).json({ error: 'Erro interno ao salvar os dados.' });
-            }
-            return;
-        }
-        
         // 5. Retorna sucesso para o Front-end
         res.status(201).json({ 
             message: 'Cadastro realizado com sucesso! Redirecionando...', 
@@ -91,7 +73,13 @@ export default async (req, res) => {
         });
 
     } catch (e) {
-        console.error('Erro na Serverless Function:', e);
-        res.status(500).json({ error: 'Falha no processamento da API de cadastro.' });
+        console.error('Erro na Serverless Function (Try/Catch):', e);
+        // Trata erros de duplicidade (que geralmente contêm o erro 23505 no log do postgres)
+        if (e.code === '23505') {
+            res.status(409).json({ error: 'E-mail ou CPF já cadastrado.' });
+        } else {
+            // Se falhar a conexão, esta será a mensagem
+            res.status(500).json({ error: `Falha no processamento da API. Erro: ${e.message}. Verifique a DATABASE_URL no Vercel.` });
+        }
     }
 };
